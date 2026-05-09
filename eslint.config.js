@@ -7,7 +7,14 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules/*', '!src/**/*'] },
+  { ignores: ['dist', 'node_modules/*', 'prettier.config.cjs', '!src/**/*'] },
+  {
+    settings: {
+      react: {
+        version: 'detect',
+      },
+    },
+  },
 
   // JS / TS Recommended
   eslint.configs.recommended,
