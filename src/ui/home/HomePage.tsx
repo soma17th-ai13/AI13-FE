@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
+import Markdown from '@/components/Markdown';
+import Spinner from '@/components/Spinner';
 import { api } from '@/lib/api';
 import type {
   ChatMessage,
   ChatSession,
   Discussion,
+  DiscussionMessage,
   KnowledgeEdge,
   KnowledgeExtraction,
   KnowledgeGraph,
@@ -22,6 +25,13 @@ const DOMAIN_COLORS: Record<string, string> = {
   금융: '#ca8a04',
   취미: '#db2777',
   업무: '#7c3aed',
+};
+
+const ROUND_ORDER: DiscussionMessage['round'][] = ['ANALYSIS', 'REBUTTAL', 'SYNTHESIS'];
+const ROUND_LABEL: Record<DiscussionMessage['round'], string> = {
+  ANALYSIS: '1라운드 · 분석',
+  REBUTTAL: '2라운드 · 반론',
+  SYNTHESIS: '3라운드 · 종합',
 };
 
 type LoadState = 'idle' | 'loading';
@@ -75,7 +85,10 @@ function HomePage() {
     return { nodes, edges: lastExtraction?.edges ?? [] };
   }, [graph, lastExtraction?.edges, nodes]);
 
-  const graphPoints = useMemo(() => positionNodes(visibleGraph.nodes), [visibleGraph.nodes]);
+  const graphPoints = useMemo(
+    () => positionNodes(visibleGraph.nodes, graph?.centerNode.id ?? selectedNodeId),
+    [visibleGraph.nodes, graph?.centerNode.id, selectedNodeId],
+  );
 
   const graphPointById = useMemo(() => {
     return new Map(graphPoints.map((point) => [point.id, point]));
@@ -167,6 +180,7 @@ function HomePage() {
       setLastExtraction(extraction);
       setNodes(nextNodes);
       setSelectedNodeId(extraction.nodes[0]?.id ?? nextNodes[0]?.id ?? null);
+      setInputText('');
       setStatusMessage(`노드 ${extraction.nodes.length}개와 연결 ${extraction.edges.length}개를 저장했습니다.`);
     } catch (error) {
       setErrorMessage(toMessage(error));
@@ -326,6 +340,7 @@ function HomePage() {
               value={inputText}
             />
             <button className="primary-button" disabled={loading.extract === 'loading'} type="submit">
+              {loading.extract === 'loading' && <Spinner />}
               {loading.extract === 'loading' ? '분석 중' : '노드 생성'}
             </button>
           </form>
@@ -377,6 +392,22 @@ function HomePage() {
             ))}
             {!personas.length && <p className="empty">백엔드에 등록된 페르소나가 없습니다.</p>}
           </div>
+
+          {activeChatPersona && (
+            <div className="persona-detail">
+              <div className="persona-detail-header">
+                <span style={{ backgroundColor: getDomainColor(activeChatPersona.domainName) }} />
+                <div>
+                  <strong>{activeChatPersona.name}</strong>
+                  <small>
+                    {activeChatPersona.domainName} ·{' '}
+                    {activeChatPersona.builtIn ? '기본 페르소나' : '사용자 추가'}
+                  </small>
+                </div>
+              </div>
+              <p className="persona-prompt">{activeChatPersona.systemPrompt}</p>
+            </div>
+          )}
         </article>
 
         <article className="panel graph-panel">
@@ -427,7 +458,7 @@ function HomePage() {
           )}
 
           <div className="node-list">
-            {nodes.slice(0, 8).map((node) => (
+            {nodes.slice(0, 20).map((node) => (
               <button
                 className={selectedNodeId === node.id ? 'is-active' : ''}
                 key={node.id}
@@ -464,11 +495,23 @@ function HomePage() {
             {(activeChat?.messages ?? []).map((message) => (
               <div className={`message ${message.role === 'USER' ? 'is-user' : 'is-assistant'}`} key={message.id}>
                 <span>{message.role === 'USER' ? '나' : activeChatPersona?.domainName}</span>
-                <p>{message.content}</p>
+                {message.role === 'USER' ? (
+                  <p>{message.content}</p>
+                ) : (
+                  <Markdown>{message.content}</Markdown>
+                )}
               </div>
             ))}
-            {!activeChat?.messages.length && (
+            {!activeChat?.messages.length && loading.chat !== 'loading' && (
               <p className="empty">선택한 페르소나에게 현재 노드나 생활 패턴을 질문해 보세요.</p>
+            )}
+            {loading.chat === 'loading' && (
+              <div className="message is-assistant message-pending">
+                <span>{activeChatPersona?.domainName}</span>
+                <p className="pending-indicator">
+                  <Spinner /> 답변 작성 중…
+                </p>
+              </div>
             )}
           </div>
 
@@ -480,7 +523,8 @@ function HomePage() {
               value={chatInput}
             />
             <button disabled={!activeChatPersona || loading.chat === 'loading'} type="submit">
-              전송
+              {loading.chat === 'loading' && <Spinner />}
+              {loading.chat === 'loading' ? '전송 중' : '전송'}
             </button>
           </form>
         </article>
@@ -512,27 +556,57 @@ function HomePage() {
               ))}
             </div>
             <button className="primary-button" disabled={loading.discussion === 'loading'} type="submit">
+              {loading.discussion === 'loading' && <Spinner />}
               {loading.discussion === 'loading' ? '토론 중' : '토론 실행'}
             </button>
           </form>
 
-          {discussion && (
+        </article>
+
+        <article className="panel discussion-result-panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Discussion Result</p>
+              <h2>토론 결과</h2>
+            </div>
+          </div>
+
+          {loading.discussion === 'loading' ? (
+            <div className="loading-placeholder">
+              <Spinner size={22} />
+              <span>토론 진행 중… 30초~1분 소요됩니다.</span>
+            </div>
+          ) : discussion ? (
             <div className="discussion-result">
-              <h3>{discussion.title}</h3>
-              <p>{discussion.summary}</p>
-              <strong>Action Plan</strong>
-              <p>{discussion.actionPlan}</p>
-              <div className="rounds">
-                {discussion.messages.map((message) => (
-                  <details key={message.id}>
-                    <summary>
-                      {message.round} · {message.personaName ?? 'Synthesis'}
-                    </summary>
-                    <p>{message.content}</p>
-                  </details>
-                ))}
+              <div className="discussion-header">
+                <h3>{discussion.title}</h3>
+                {discussion.summary && (
+                  <Markdown className="discussion-summary">{discussion.summary}</Markdown>
+                )}
+              </div>
+
+              {discussion.actionPlan && (
+                <div className="action-plan">
+                  <strong>실행 계획</strong>
+                  <Markdown>{discussion.actionPlan}</Markdown>
+                </div>
+              )}
+
+              <div className="discussion-rounds">
+                {ROUND_ORDER.map((round) => {
+                  const messages = discussion.messages.filter((m) => m.round === round);
+                  if (messages.length === 0) return null;
+                  return (
+                    <details key={round} className="round-group" open>
+                      <summary>{ROUND_LABEL[round]}</summary>
+                      <DiscussionRound messages={messages} personas={personas} />
+                    </details>
+                  );
+                })}
               </div>
             </div>
+          ) : (
+            <p className="empty">토론을 실행하면 결과가 여기에 표시됩니다.</p>
           )}
         </article>
       </section>
@@ -559,7 +633,12 @@ function GraphCanvas({
 
   return (
     <div className="graph-canvas">
-      <svg aria-hidden="true" className="edge-layer" viewBox="0 0 100 100">
+      <svg
+        aria-hidden="true"
+        className="edge-layer"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+      >
         {edges.map((edge) => {
           const source = nodeById.get(edge.sourceNodeId);
           const target = nodeById.get(edge.targetNodeId);
@@ -571,7 +650,9 @@ function GraphCanvas({
           return (
             <line
               key={edge.id}
-              strokeWidth={Math.max(0.45, Number(edge.confidence) * 1.4)}
+              vectorEffect="non-scaling-stroke"
+              strokeWidth={Math.max(1, Number(edge.confidence) * 2.2)}
+              strokeOpacity={0.35 + Number(edge.confidence) * 0.55}
               x1={source.x}
               x2={target.x}
               y1={source.y}
@@ -598,26 +679,112 @@ function GraphCanvas({
   );
 }
 
-function positionNodes(nodes: KnowledgeNode[]): GraphPoint[] {
+function positionNodes(nodes: KnowledgeNode[], centerNodeId: number | null): GraphPoint[] {
+  if (nodes.length === 0) return [];
   if (nodes.length === 1) {
     return [{ ...nodes[0], x: 50, y: 50, color: getDomainColor(nodes[0].domainName) }];
   }
 
-  return nodes.map((node, index) => {
-    const angle = (Math.PI * 2 * index) / nodes.length - Math.PI / 2;
-    const radius = index === 0 ? 0 : 34;
+  const center =
+    (centerNodeId != null && nodes.find((node) => node.id === centerNodeId)) || nodes[0];
+  const others = nodes.filter((node) => node.id !== center.id);
 
-    return {
-      ...node,
-      x: 50 + Math.cos(angle) * radius,
-      y: 50 + Math.sin(angle) * radius,
-      color: getDomainColor(node.domainName),
-    };
-  });
+  const points: GraphPoint[] = [
+    { ...center, x: 50, y: 50, color: getDomainColor(center.domainName) },
+  ];
+
+  const innerCap = 6;
+  const inner = others.slice(0, innerCap);
+  const outer = others.slice(innerCap);
+
+  const placeRing = (ring: KnowledgeNode[], radius: number, angleOffset: number) => {
+    ring.forEach((node, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(ring.length, 4) - Math.PI / 2 + angleOffset;
+      points.push({
+        ...node,
+        x: 50 + Math.cos(angle) * radius,
+        y: 50 + Math.sin(angle) * radius,
+        color: getDomainColor(node.domainName),
+      });
+    });
+  };
+
+  placeRing(inner, 26, 0);
+  placeRing(outer, 42, 0.45);
+
+  return points;
 }
 
 function getDomainColor(domainName: string) {
   return DOMAIN_COLORS[domainName] ?? '#0f766e';
+}
+
+function DiscussionRound({
+  messages,
+  personas,
+}: {
+  messages: DiscussionMessage[];
+  personas: Persona[];
+}) {
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  if (messages.length === 0) return null;
+
+  const safeIndex = Math.min(activeIndex, messages.length - 1);
+  const active = messages[safeIndex];
+  const activeDomain = active.personaId
+    ? personas.find((p) => p.id === active.personaId)?.domainName ?? null
+    : null;
+
+  if (messages.length === 1) {
+    return (
+      <div
+        className="round-panel"
+        style={activeDomain ? { borderLeftColor: getDomainColor(activeDomain) } : undefined}
+      >
+        <span className="round-message-author">{active.personaName ?? '종합 에이전트'}</span>
+        <Markdown>{active.content}</Markdown>
+      </div>
+    );
+  }
+
+  return (
+    <div className="round-tabs">
+      <div className="round-tablist" role="tablist">
+        {messages.map((message, index) => {
+          const domain = message.personaId
+            ? personas.find((p) => p.id === message.personaId)?.domainName ?? null
+            : null;
+          const isActive = index === safeIndex;
+          const shortLabel = domain ?? '종합';
+          return (
+            <button
+              aria-selected={isActive}
+              className={`round-tab ${isActive ? 'is-active' : ''}`}
+              key={message.id}
+              onClick={() => setActiveIndex(index)}
+              role="tab"
+              style={
+                isActive && domain
+                  ? { borderBottomColor: getDomainColor(domain), color: getDomainColor(domain) }
+                  : undefined
+              }
+              type="button"
+            >
+              {shortLabel}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        className="round-panel"
+        role="tabpanel"
+        style={activeDomain ? { borderLeftColor: getDomainColor(activeDomain) } : undefined}
+      >
+        <Markdown>{active.content}</Markdown>
+      </div>
+    </div>
+  );
 }
 
 function uniqueIds(ids: number[]) {
